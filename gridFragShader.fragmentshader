@@ -1,0 +1,10 @@
+#version 330 core
+in vec4 vertex_coordinate;
+in vec3 fragmentColor;
+uniform vec3 camera;
+
+void main(){
+    float fade_factor = length(camera - vertex_coordinate.xyz);
+    fade_factor = clamp(1.0 - fade_factor/100.0, 0.0, 1.0);
+    gl_FragColor.rgb = fragmentColor*fade_factor;
+}
