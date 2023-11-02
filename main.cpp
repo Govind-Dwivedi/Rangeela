@@ -11,7 +11,11 @@ bool firstmouse = true, surveyMode = false, translateMode = false;
 double lastX, lastY;
 float horizontalAngle = 3.14f, verticaleAngle = 0.0f;
 float width = 1200, height = 700;
-bool isVertexSelected[10] = {false};
+int max_vertices = 100;
+bool isVertexSelected[100] = {false};
+glm::vec3 avg_normal = glm::vec3(0.0f, 0.0f, 0.0f);
+int noOfVertices = 8, noOfSelectedVertices = 0, connection[100][100];
+
 glm::mat4 Projection = glm::perspective(glm::radians(45.0f), (float)width / (float)height, 0.1f, 100.0f);
 glm::mat4 View = glm::lookAt(
     glm::vec3(4, 3, -3),
@@ -19,7 +23,8 @@ glm::mat4 View = glm::lookAt(
     glm::vec3(0, 1, 0));
 glm::mat4 Model = glm::mat4(1.0f);
 
-static GLfloat g_vertex_buffer_data[] = {
+static GLfloat g_vertex_buffer_data[300];
+GLfloat cube_vertices[] = {
     0.5f, 0.5f, 0.5f,
     0.5f, 0.5f, -0.5f,
     0.5f, -0.5f, -0.5f,
@@ -30,15 +35,16 @@ static GLfloat g_vertex_buffer_data[] = {
     -0.5f, -0.5f, 0.5f
 };
 
-static GLfloat g_color_buffer_data[24] = {
-    1.0f, 1.0f, 0.5f,
-    1.0f, 1.0f, 0.5f,
-    1.0f, 1.0f, 0.5f,
-    0.5f, 1.0f, 0.5f,
-    0.5f, 0.5f, 0.5f,
-    0.5f, 0.5f, 0.5f,
-    0.5f, 1.0f, 0.5f,
-    0.5f, 0.5f, 0.5f
+static GLfloat g_color_buffer_data[300];
+GLfloat cube_color[] = {
+    0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f,
 };
 
 GLuint vertexbuffer, colorbuffer, programID, MatrixID, lineIndicesbuffer, indexbuffer, line_indices;
@@ -74,7 +80,7 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action, int mod
 void changeColor(int vertex)
 {
     int v = vertex * 3;
-    if (g_color_buffer_data[v] == 0.0f)
+    if (isVertexSelected[vertex])
     {
         g_color_buffer_data[v] = 1.0f;
         g_color_buffer_data[v + 1] = 0.0f;
@@ -88,6 +94,30 @@ void changeColor(int vertex)
     }
     glBindBuffer(GL_ARRAY_BUFFER, colorbuffer);
     glBufferData(GL_ARRAY_BUFFER, sizeof(g_color_buffer_data), g_color_buffer_data, GL_STATIC_DRAW);
+}
+
+void updateAvgNormal(int vertex){
+    if(isVertexSelected[vertex]){
+        avg_normal.x = avg_normal.x*noOfSelectedVertices + g_vertex_buffer_data[3 * vertex];
+        avg_normal.y = avg_normal.y*noOfSelectedVertices + g_vertex_buffer_data[3 * vertex + 1];
+        avg_normal.z = avg_normal.z*noOfSelectedVertices + g_vertex_buffer_data[3 * vertex + 2];
+        noOfSelectedVertices++;
+    }
+    else{
+        avg_normal.x = avg_normal.x*noOfSelectedVertices - g_vertex_buffer_data[3 * vertex];
+        avg_normal.y = avg_normal.y*noOfSelectedVertices - g_vertex_buffer_data[3 * vertex + 1];
+        avg_normal.z = avg_normal.z*noOfSelectedVertices - g_vertex_buffer_data[3 * vertex + 2];
+        noOfSelectedVertices--;
+    }
+    if(noOfSelectedVertices != 0){
+        avg_normal.x = avg_normal.x/noOfSelectedVertices;
+        avg_normal.y = avg_normal.y/noOfSelectedVertices;
+        avg_normal.z = avg_normal.z/noOfSelectedVertices;
+    }
+    else{
+        avg_normal = glm::vec3(0.0f, 0.0f, 0.0f);
+    }
+    avg_normal = glm::normalize(avg_normal);
 }
 
 GLint findClosestVertexIntersection(const glm::vec3 &rayStart, const glm::vec3 &rayDir)
@@ -155,47 +185,107 @@ void performPicking(int x, int y)
     if (selectedVertex != -1)
     {
         isVertexSelected[selectedVertex] = !isVertexSelected[selectedVertex];
+        updateAvgNormal(selectedVertex);
         changeColor(selectedVertex);
     }
 }
 
+glm::vec3 modelToScreen(glm::vec3 pos){
+    glm::vec4 position = glm::vec4(pos, 1.0f);
+    glm::mat4 mvp = Projection * View * Model;
+    glm::vec4 clip = mvp * position;
+    glm::vec4 ndc = clip / clip.w;
+    int viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+
+    glm::vec3 screen;
+    screen.x = (ndc.x * 0.5 + 0.5) * viewport[2] + viewport[0];
+    screen.y = (ndc.y * 0.5 + 0.5) * viewport[3] + viewport[1];
+    screen.z = (ndc.z + 1) * 0.5;
+
+    return screen;
+}
+
+glm::vec3 screenToModel(glm::vec3 screen, float w){
+    glm::vec4 position, clip, ndc;
+    glm::vec3 pos;
+    int viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+
+    ndc.x = 2.0f * (screen.x - viewport[0]) / viewport[2] - 1.0f;
+    // ndc.y = 1.0f - 2.0f*(screen.y - viewport[1])/viewport[3];
+    ndc.y = 2.0f * (screen.y - viewport[1]) / viewport[3] - 1.0f;
+    ndc.z = 2.0f * screen.z - 1.0f;
+
+    clip = ndc * w;
+    glm::mat4 inverseProjection = glm::inverse(Projection);
+    glm::mat4 inverseView = glm::inverse(View);
+
+    position = inverseProjection * clip;
+    position = inverseView * position;
+
+    pos.x = position.x;
+    pos.y = position.y;
+    pos.z = position.z;
+    return pos;
+}
+
+glm::vec3 updatePos(int x, int y, glm::vec3 pos){
+    glm::vec4 position = glm::vec4(pos, 1.0f);
+    glm::mat4 mvp = Projection * View * Model;
+    glm::vec4 clip = mvp * position;
+
+    glm::vec4 ndc = clip / clip.w;
+    int viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+
+    glm::vec3 screen;
+    screen.x = (ndc.x * 0.5 + 0.5) * viewport[2] + viewport[0];
+    screen.y = (ndc.y * 0.5 + 0.5) * viewport[3] + viewport[1];
+    screen.z = (ndc.z + 1) * 0.5;
+    
+    // glm::vec3 screen1 = modelToScreen(pos);
+    // std::cout<<"Screen inline = "<<glm::to_string(screen)<<std::endl;
+    // std::cout<<"Screen by funtion = "<<glm::to_string(screen1)<<std::endl;
+
+    screen.x = screen.x + x;
+    screen.y = screen.y - y;
+    // glm::vec3 pos1 = screenToModel(screen, clip.w);
+
+    ndc.x = 2.0f * (screen.x - viewport[0]) / viewport[2] - 1.0f;
+    // ndc.y = 1.0f - 2.0f*(screen.y - viewport[1])/viewport[3];
+    ndc.y = 2.0f * (screen.y - viewport[1]) / viewport[3] - 1.0f;
+    ndc.z = 2.0f * screen.z - 1.0f;
+
+    clip = ndc * clip.w;
+    glm::mat4 inverseProjection = glm::inverse(Projection);
+    glm::mat4 inverseView = glm::inverse(View);
+
+    position = inverseProjection * clip;
+    position = inverseView * position;
+
+    pos.x = position.x;
+    pos.y = position.y;
+    pos.z = position.z;
+    // std::cout<<"Pos inline = "<<glm::to_string(pos)<<std::endl;
+    // std::cout<<"Pos by funtion = "<<glm::to_string(pos1)<<std::endl;
+    
+    return pos;
+}
+
 void translate(int x, int y)
 {
-    glm::mat4 mvp = Projection * View * Model;
     int n = 8;
     for (int i = 0; i < n; i++)
     {
         if (isVertexSelected[i])
         {
-            glm::vec4 vertex = glm::vec4(g_vertex_buffer_data[3 * i], g_vertex_buffer_data[3 * i + 1], g_vertex_buffer_data[3 * i + 2], 1.0f);
-            glm::vec4 clip = mvp * vertex;
-            glm::vec4 ndc = clip / clip.w;
-            int viewport[4];
-            glGetIntegerv(GL_VIEWPORT, viewport);
-
-            glm::vec3 screen;
-            screen.x = (ndc.x * 0.5 + 0.5) * viewport[2] + viewport[0];
-            screen.y = (ndc.y * 0.5 + 0.5) * viewport[3] + viewport[1];
-            screen.z = (ndc.z + 1) * 0.5;
-
-            screen.x = screen.x + x;
-            screen.y = screen.y - y;
-
-            ndc.x = 2.0f * (screen.x - viewport[0]) / viewport[2] - 1.0f;
-            // ndc.y = 1.0f - 2.0f*(screen.y - viewport[1])/viewport[3];
-            ndc.y = 2.0f * (screen.y - viewport[1]) / viewport[3] - 1.0f;
-            ndc.z = 2.0f * screen.z - 1.0f;
-
-            clip = ndc * clip.w;
-            glm::mat4 inverseProjection = glm::inverse(Projection);
-            glm::mat4 inverseView = glm::inverse(View);
-
-            vertex = inverseProjection * clip;
-            vertex = inverseView * vertex;
-
+            glm::vec3 vertex = glm::vec3(g_vertex_buffer_data[3 * i], g_vertex_buffer_data[3 * i + 1], g_vertex_buffer_data[3 * i + 2]);
+            vertex = updatePos(x, y, vertex);
             g_vertex_buffer_data[3 * i] = vertex.x;
             g_vertex_buffer_data[3 * i + 1] = vertex.y;
             g_vertex_buffer_data[3 * i + 2] = vertex.z;
+            updateAvgNormal(i);
         }
         glBindBuffer(GL_ARRAY_BUFFER, vertexbuffer);
         glBufferData(GL_ARRAY_BUFFER, sizeof(g_vertex_buffer_data), g_vertex_buffer_data, GL_STATIC_DRAW);
@@ -272,7 +362,6 @@ glm::vec3 getCameraPosition()
 }
 
 int main()
-
 {
     glewExperimental = true; // Needed for core profile
     if (!glfwInit())
@@ -311,6 +400,28 @@ int main()
     glGenVertexArrays(1, &VertexArrayID);
     glBindVertexArray(VertexArrayID);
 
+    GLfloat cube_vertices[] = {
+    0.5f, 0.5f, 0.5f,
+    0.5f, 0.5f, -0.5f,
+    0.5f, -0.5f, -0.5f,
+    0.5f, -0.5f, 0.5f,
+    -0.5f, 0.5f, 0.5f,
+    -0.5f, 0.5f, -0.5f,
+    -0.5f, -0.5f, -0.5f,
+    -0.5f, -0.5f, 0.5f
+    };
+
+    GLfloat cube_color[] = {
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+    };
+
     unsigned int indices[] = {
         0, 1, 2,
         0, 2, 3,
@@ -323,7 +434,8 @@ int main()
         0, 1, 4,
         1, 4, 5,
         2, 3, 6,
-        3, 6, 7};
+        3, 6, 7
+    };
 
     unsigned int line_indices[] = {
         0, 1,
@@ -337,26 +449,78 @@ int main()
         5, 6,
         6, 7,
         1, 5,
-        2, 6};
+        2, 6
+    };
 
-    static GLfloat gridBufferVertex[240];
-    for (int i = 0; i < 80; i++)
-    {
-        gridBufferVertex[3 * i] = -100 + 5 * (i / 2);
-        gridBufferVertex[3 * i + 1] = 0;
-        gridBufferVertex[3 * i + 2] = (1 - 2 * (i % 2)) * 100;
+    for(int i=0; i<24; i++){
+        g_vertex_buffer_data[i] = cube_vertices[i];
+        g_color_buffer_data[i] = cube_color[i];
     }
 
-    static GLfloat gridColor[240];
-    for (int i = 0; i < 80; i++){
-        gridColor[3 * i] = 0.0f;
-        gridColor[3 * i + 1] = 0.0f;
-        gridColor[3 * i + 2] = 1.0f;
+    for(int i=0; i<max_vertices; i++){
+        for(int j=0; j<max_vertices; j++){
+            connection[i][j] = -1;
+        }
+    }
+
+    for(int i=0, size=sizeof(line_indices)/sizeof(int); i<size; i+=2){
+        for(int j=0; j<max_vertices; j++){
+            if(connection[line_indices[i]][j] == -1){
+                connection[line_indices[i]][j] = line_indices[i+1];
+                break;
+            }
+        }
+        for(int j=0; j<max_vertices; j++){
+            if(connection[line_indices[i+1]][j] == -1){
+                connection[line_indices[i+1]][j] = line_indices[i];
+                break;
+            }
+        }
+    }
+
+    int grid_end = 50, grid_stride = 1;
+    int grid_vert_2sides = 4*(grid_end/grid_stride) + 2;             //grid_vert_2sides variable contains number od vertices in grid on two sides on front and back or laft side and right side
+    int grid_array_len = grid_vert_2sides*6;
+    static GLfloat gridBufferVertex[1212];
+
+    for (int i=0; i<grid_vert_2sides; i++)
+    {
+        gridBufferVertex[3 * i] = -grid_end + grid_stride * (i / 2);
+        gridBufferVertex[3 * i + 1] = 0;
+        gridBufferVertex[3 * i + 2] = (1 - 2 * (i % 2)) * grid_end;
+    }
+
+    for (int i=0; i<grid_vert_2sides; i++)
+    {
+        gridBufferVertex[3*grid_vert_2sides + 3*i] = (1 - 2 * (i % 2)) * grid_end;
+        gridBufferVertex[3*grid_vert_2sides + 3*i + 1] = 0;
+        gridBufferVertex[3*grid_vert_2sides + 3*i + 2] = -grid_end + grid_stride * (i / 2);
+    }
+
+    static GLfloat gridColor[1212];
+    for (int i = 0; i < grid_vert_2sides*2; i++){
+        gridColor[3 * i] = 0.2f;
+        gridColor[3 * i + 1] = 0.2f;
+        gridColor[3 * i + 2] = 0.2f;
+    }
+
+    {
+        int grid_center = 2*grid_end/grid_stride;
+        for(int i=0; i<6; i++){
+            if(i!=0 && i!=3){
+                gridColor[3*grid_center+i] = 0.3f;
+                gridColor[3*grid_vert_2sides + 3*grid_center + i] = 0.3f;
+            }
+            else{
+                gridColor[3*grid_center+i] = 0.8f;
+                gridColor[3*grid_vert_2sides + 3*grid_center + i] = 0.8f;
+            }
+        }
     }
 
     static GLfloat planeBufferColor[24];
     for (int i = 0; i < 24; i++)
-        planeBufferColor[i] = 0.5f;
+        planeBufferColor[i] = 0.8f;
 
     glGenBuffers(1, &vertexbuffer);
     glBindBuffer(GL_ARRAY_BUFFER, vertexbuffer);
@@ -416,7 +580,7 @@ int main()
             lastTime += 1.0;
         }
 
-        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(programID);
@@ -440,7 +604,7 @@ int main()
         glEnableVertexAttribArray(1);
         
         //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        glDrawArrays(GL_LINES, 0, 240);
+        glDrawArrays(GL_LINES, 0, grid_array_len);
 
        // glUseProgram(programID);
  
